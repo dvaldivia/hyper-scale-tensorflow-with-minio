@@ -1,4 +1,5 @@
-tensorboard==2.2.1
-tensorflow==2.2.0
-tensorflow-hub==0.8.0
-minio==5.0.10
+tensorboard==2.9.1
+tensorflow==2.9.2
+tensorflow-io==2.9.2
+tensorflow-hub==0.12.0
+minio==7.1.11

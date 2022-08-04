@@ -1,17 +1,16 @@
 # Copyright MinIO 2020
-
-
+import math
 import os
 import random
 import tarfile
 import timeit
 from datetime import datetime
 
-import math
 import tensorflow as tf
 import tensorflow_hub as hub
+import tensorflow_io
 from minio import Minio
-from minio.error import ResponseError
+from minio.error import S3Error
 from tensorflow import keras
 
 random_seed = 44
@@ -34,7 +33,7 @@ try:
         datasets_bucket,
         "aclImdb_v1.tar.gz",
         "/tmp/dataset.tar.gz")
-except ResponseError as err:
+except S3Error as err:
     print(err)
 
 extract_folder = f"/tmp/{datasets_bucket}/"
@@ -136,7 +135,7 @@ def process_examples(records, prefix=""):
             print(f"file size {os.stat(file_name).st_size}")
             try:
                 minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
-            except ResponseError as err:
+            except S3Error as err:
                 print(err)
             file_list.append(file_name)
             os.remove(file_name)
@@ -151,7 +150,7 @@ def process_examples(records, prefix=""):
                     writer.write(example.SerializeToString())
         try:
             minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
-        except ResponseError as err:
+        except S3Error as err:
             print(err)
         file_list.append(file_name)
         os.remove(file_name)
