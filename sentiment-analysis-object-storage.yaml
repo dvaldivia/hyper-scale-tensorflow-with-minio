@@ -1,0 +1,774 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: my-pipeline-
+  annotations: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.13, pipelines.kubeflow.org/pipeline_compilation_time: '2022-08-12T17:08:52.460856',
+    pipelines.kubeflow.org/pipeline_spec: '{"inputs": [{"name": "url"}], "name": "My
+      pipeline"}'}
+  labels: {pipelines.kubeflow.org/kfp_sdk_version: 1.8.13}
+spec:
+  entrypoint: my-pipeline
+  templates:
+  - name: deploy-model
+    container:
+      args: [--train, /tmp/inputs/train/data, --output-text, /tmp/outputs/output_text/data]
+      command:
+      - sh
+      - -c
+      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+        'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' || PIP_DISABLE_PIP_VERSION_CHECK=1
+        python3 -m pip install --quiet --no-warn-script-location 'minio==7.1.10' 'tensorflow==2.2.3'
+        'protobuf==3.20.0' --user) && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - |
+        def _make_parent_dirs_and_return_path(file_path: str):
+            import os
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            return file_path
+
+        def serve(train_path,
+                  output_text_path):
+            print("Do Serving")
+            with open(output_text_path, 'w') as writer:
+                writer.write("done training!")
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Deploy Model', description='')
+        _parser.add_argument("--train", dest="train_path", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = serve(**_parsed_args)
+      image: python:3.7
+    inputs:
+      artifacts:
+      - {name: evaluate-model-output_text, path: /tmp/inputs/train/data}
+    outputs:
+      artifacts:
+      - {name: deploy-model-output_text, path: /tmp/outputs/output_text/data}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.13
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--train", {"inputPath": "train"}, "--output-text", {"outputPath":
+          "output_text"}], "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' || PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' --user) && \"$0\" \"$@\"", "sh",
+          "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\" > \"$program_path\"\npython3
+          -u \"$program_path\" \"$@\"\n", "def _make_parent_dirs_and_return_path(file_path:
+          str):\n    import os\n    os.makedirs(os.path.dirname(file_path), exist_ok=True)\n    return
+          file_path\n\ndef serve(train_path,\n          output_text_path):\n    print(\"Do
+          Serving\")\n    with open(output_text_path, ''w'') as writer:\n        writer.write(\"done
+          training!\")\n\nimport argparse\n_parser = argparse.ArgumentParser(prog=''Deploy
+          Model'', description='''')\n_parser.add_argument(\"--train\", dest=\"train_path\",
+          type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--output-text\",
+          dest=\"output_text_path\", type=_make_parent_dirs_and_return_path, required=True,
+          default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
+          = serve(**_parsed_args)\n"], "image": "python:3.7"}}, "inputs": [{"name":
+          "train"}], "name": "Deploy Model", "outputs": [{"name": "output_text", "type":
+          "String"}]}', pipelines.kubeflow.org/component_ref: '{}'}
+  - name: evaluate-model
+    container:
+      args: [--train, /tmp/inputs/train/data, --output-text, /tmp/outputs/output_text/data]
+      command:
+      - sh
+      - -c
+      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+        'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' 'matplotlib' 'numpy'
+        || PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+        'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' 'matplotlib' 'numpy'
+        --user) && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - |
+        def _make_parent_dirs_and_return_path(file_path: str):
+            import os
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            return file_path
+
+        def evaluate(train_path,
+                     output_text_path):
+            import tensorflow as tf
+            from minio import Minio
+            from tensorflow import keras
+            import os
+
+            # Config Paramters
+            minio_address = "minio.ns-1.svc.cluster.local"
+            minio_access_key = "kubeflow"
+            minio_secret_key = "kubeflow123"
+            datasets_bucket = "datasets"
+
+            preprocessed_data_folder = "preprocessed-data"
+            tf_record_file_size = 500
+
+            # Configure TF to use MinIO
+            os.environ["AWS_ACCESS_KEY_ID"] = minio_access_key
+            os.environ["AWS_SECRET_ACCESS_KEY"] = minio_secret_key
+            os.environ["AWS_REGION"] = "us-east-1"
+            os.environ["S3_ENDPOINT"] = minio_address
+            os.environ["S3_USE_HTTPS"] = "0"
+            os.environ["S3_VERIFY_SSL"] = "0"
+
+            minioClient = Minio(minio_address,
+                                access_key=minio_access_key,
+                                secret_key=minio_secret_key,
+                                secure=False)
+
+            AUTO = tf.data.experimental.AUTOTUNE
+            ignore_order = tf.data.Options()
+            ignore_order.experimental_deterministic = False
+
+            # List all testing tfrecord files
+            objects = minioClient.list_objects(datasets_bucket, prefix=f"{preprocessed_data_folder}/test")
+            testing_files_list = []
+            for obj in objects:
+                testing_files_list.append(obj.object_name)
+
+            testing_filenames = [f"s3://datasets/{f}" for f in testing_files_list]
+
+            testing_dataset = tf.data.TFRecordDataset(testing_filenames, num_parallel_reads=AUTO, compression_type="GZIP")
+            testing_dataset = testing_dataset.with_options(ignore_order)
+
+            def decode_fn(record_bytes):
+                schema = {
+                    "label": tf.io.FixedLenFeature([2], dtype=tf.int64),
+                    "sentence": tf.io.FixedLenFeature([512], dtype=tf.float32),
+                }
+
+                tf_example = tf.io.parse_single_example(record_bytes, schema)
+                new_shape = tf.reshape(tf_example["sentence"], [1, 512])
+                label = tf.reshape(tf_example["label"], [1, 2])
+                return new_shape, label
+
+            testing_mapped_ds = testing_dataset.map(decode_fn)
+            testing_mapped_ds = testing_mapped_ds.repeat(5)
+            testing_mapped_ds = testing_mapped_ds.batch(128)
+
+            # load model
+            model_destination = f"s3://{datasets_bucket}/imdb_sentiment_analysis/1"
+
+            model = keras.models.load_model(model_destination)
+
+            testing = model.evaluate(testing_mapped_ds)
+
+            print(testing)
+
+            with open(output_text_path, 'w') as writer:
+                writer.write("done eval!")
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Evaluate Model', description='')
+        _parser.add_argument("--train", dest="train_path", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = evaluate(**_parsed_args)
+      image: python:3.7
+    inputs:
+      artifacts:
+      - {name: training-output_text, path: /tmp/inputs/train/data}
+    outputs:
+      artifacts:
+      - {name: evaluate-model-output_text, path: /tmp/outputs/output_text/data}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.13
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--train", {"inputPath": "train"}, "--output-text", {"outputPath":
+          "output_text"}], "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' ''matplotlib'' ''numpy'' || PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' ''matplotlib'' ''numpy'' --user)
+          && \"$0\" \"$@\"", "sh", "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\"
+          > \"$program_path\"\npython3 -u \"$program_path\" \"$@\"\n", "def _make_parent_dirs_and_return_path(file_path:
+          str):\n    import os\n    os.makedirs(os.path.dirname(file_path), exist_ok=True)\n    return
+          file_path\n\ndef evaluate(train_path,\n             output_text_path):\n    import
+          tensorflow as tf\n    from minio import Minio\n    from tensorflow import
+          keras\n    import os\n\n    # Config Paramters\n    minio_address = \"minio.ns-1.svc.cluster.local\"\n    minio_access_key
+          = \"kubeflow\"\n    minio_secret_key = \"kubeflow123\"\n    datasets_bucket
+          = \"datasets\"\n\n    preprocessed_data_folder = \"preprocessed-data\"\n    tf_record_file_size
+          = 500\n\n    # Configure TF to use MinIO\n    os.environ[\"AWS_ACCESS_KEY_ID\"]
+          = minio_access_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"] = minio_secret_key\n    os.environ[\"AWS_REGION\"]
+          = \"us-east-1\"\n    os.environ[\"S3_ENDPOINT\"] = minio_address\n    os.environ[\"S3_USE_HTTPS\"]
+          = \"0\"\n    os.environ[\"S3_VERIFY_SSL\"] = \"0\"\n\n    minioClient =
+          Minio(minio_address,\n                        access_key=minio_access_key,\n                        secret_key=minio_secret_key,\n                        secure=False)\n\n    AUTO
+          = tf.data.experimental.AUTOTUNE\n    ignore_order = tf.data.Options()\n    ignore_order.experimental_deterministic
+          = False\n\n    # List all testing tfrecord files\n    objects = minioClient.list_objects(datasets_bucket,
+          prefix=f\"{preprocessed_data_folder}/test\")\n    testing_files_list = []\n    for
+          obj in objects:\n        testing_files_list.append(obj.object_name)\n\n    testing_filenames
+          = [f\"s3://datasets/{f}\" for f in testing_files_list]\n\n    testing_dataset
+          = tf.data.TFRecordDataset(testing_filenames, num_parallel_reads=AUTO, compression_type=\"GZIP\")\n    testing_dataset
+          = testing_dataset.with_options(ignore_order)\n\n    def decode_fn(record_bytes):\n        schema
+          = {\n            \"label\": tf.io.FixedLenFeature([2], dtype=tf.int64),\n            \"sentence\":
+          tf.io.FixedLenFeature([512], dtype=tf.float32),\n        }\n\n        tf_example
+          = tf.io.parse_single_example(record_bytes, schema)\n        new_shape =
+          tf.reshape(tf_example[\"sentence\"], [1, 512])\n        label = tf.reshape(tf_example[\"label\"],
+          [1, 2])\n        return new_shape, label\n\n    testing_mapped_ds = testing_dataset.map(decode_fn)\n    testing_mapped_ds
+          = testing_mapped_ds.repeat(5)\n    testing_mapped_ds = testing_mapped_ds.batch(128)\n\n    #
+          load model\n    model_destination = f\"s3://{datasets_bucket}/imdb_sentiment_analysis/1\"\n\n    model
+          = keras.models.load_model(model_destination)\n\n    testing = model.evaluate(testing_mapped_ds)\n\n    print(testing)\n\n    with
+          open(output_text_path, ''w'') as writer:\n        writer.write(\"done eval!\")\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Evaluate Model'', description='''')\n_parser.add_argument(\"--train\",
+          dest=\"train_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--output-text\",
+          dest=\"output_text_path\", type=_make_parent_dirs_and_return_path, required=True,
+          default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
+          = evaluate(**_parsed_args)\n"], "image": "python:3.7"}}, "inputs": [{"name":
+          "train"}], "name": "Evaluate Model", "outputs": [{"name": "output_text",
+          "type": "String"}]}', pipelines.kubeflow.org/component_ref: '{}'}
+  - name: my-pipeline
+    dag:
+      tasks:
+      - name: deploy-model
+        template: deploy-model
+        dependencies: [evaluate-model]
+        arguments:
+          artifacts:
+          - {name: evaluate-model-output_text, from: '{{tasks.evaluate-model.outputs.artifacts.evaluate-model-output_text}}'}
+      - name: evaluate-model
+        template: evaluate-model
+        dependencies: [training]
+        arguments:
+          artifacts:
+          - {name: training-output_text, from: '{{tasks.training.outputs.artifacts.training-output_text}}'}
+      - {name: pre-process-data, template: pre-process-data}
+      - name: training
+        template: training
+        dependencies: [pre-process-data]
+        arguments:
+          artifacts:
+          - {name: pre-process-data-output_text, from: '{{tasks.pre-process-data.outputs.artifacts.pre-process-data-output_text}}'}
+  - name: pre-process-data
+    container:
+      args: [--file, train, --output-text, /tmp/outputs/output_text/data]
+      command:
+      - sh
+      - -c
+      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+        'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' || PIP_DISABLE_PIP_VERSION_CHECK=1
+        python3 -m pip install --quiet --no-warn-script-location 'minio==7.1.10' 'tensorflow==2.2.3'
+        'protobuf==3.20.0' --user) && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - |
+        def _make_parent_dirs_and_return_path(file_path: str):
+            import os
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            return file_path
+
+        def preprocess_data(file,
+                            output_text_path):
+            from minio import Minio, S3Error
+            import tarfile
+            import os
+            import math
+            import tensorflow as tf
+
+            # Config Paramters
+            minio_address = "minio.ns-1.svc.cluster.local"
+            minio_access_key = "kubeflow"
+            minio_secret_key = "kubeflow123"
+            datasets_bucket = "datasets"
+            preprocessed_data_folder = "preprocessed-data"
+            tf_record_file_size = 500
+
+            minioClient = Minio(minio_address,
+                                access_key=minio_access_key,
+                                secret_key=minio_secret_key,
+                                secure=False)
+            # Download data
+            try:
+                minioClient.fget_object(
+                    datasets_bucket,
+                    "aclImdb_v1.tar.gz",
+                    "/tmp/dataset.tar.gz")
+            except S3Error as err:
+                print(err)
+
+            # Extract data
+            extract_folder = f"/tmp/{datasets_bucket}/"
+
+            with tarfile.open("/tmp/dataset.tar.gz", "r:gz") as tar:
+                tar.extractall(path=extract_folder)
+
+            # Load and structure the data
+            train = []
+            test = []
+
+            dirs_to_read = [
+                "aclImdb/train/pos",
+                "aclImdb/train/neg",
+                "aclImdb/test/pos",
+                "aclImdb/test/neg",
+            ]
+
+            for dir_name in dirs_to_read:
+                parts = dir_name.split("/")
+                dataset = parts[1]
+                label = parts[2]
+                for filename in os.listdir(os.path.join(extract_folder, dir_name)):
+                    with open(os.path.join(extract_folder, dir_name, filename), "r") as f:
+                        content = f.read()
+                        if dataset == "train":
+                            train.append({
+                                "text": content,
+                                "label": label
+                            })
+                        elif dataset == "test":
+                            test.append({
+                                "text": content,
+                                "label": label
+                            })
+
+            # Since we encode the data using the Universal Sentence Encoder model let's download it
+            try:
+                minioClient.fget_object(
+                    datasets_bucket,
+                    "models/universal-sentence-encoder_4.tar.gz",
+                    "/tmp/universal-sentence-encoder_4.tar.gz")
+            except S3Error as err:
+                print(err)
+            se_model_prefix = "universal-sentence-encoder/4"
+            extract_folder = f"/tmp/{se_model_prefix}/"
+
+            with tarfile.open("/tmp/universal-sentence-encoder_4.tar.gz", "r:gz") as tar:
+                tar.extractall(path=extract_folder)
+            embed = tf.saved_model.load(extract_folder)
+
+            def _embedded_sentence_feature(value):
+                # convert tensor to list of float values
+                input = value.numpy().ravel().tolist()
+                return tf.train.Feature(float_list=tf.train.FloatList(value=input))
+
+            def _label_feature(value):
+                # convert tensor to list of float values
+                input = value.numpy().ravel().tolist()
+                return tf.train.Feature(int64_list=tf.train.Int64List(value=input))
+
+            def encode_label(label):
+                if label == "pos":
+                    return tf.constant([1, 0])
+                elif label == "neg":
+                    return tf.constant([0, 1])
+
+            def serialize_example(label, sentence_tensor):
+                feature = {
+                    "sentence": _embedded_sentence_feature(sentence_tensor[0]),
+                    "label": _label_feature(label),
+                }
+                example_proto = tf.train.Example(features=tf.train.Features(feature=feature))
+                return example_proto
+
+            def process_examples(records, prefix=""):
+                print(f"Process examples for prefix: {prefix}")
+                import timeit
+                starttime = timeit.default_timer()
+                total_training = len(records)
+                print(f"Total of {total_training} elements")
+                total_batches = math.floor(total_training / tf_record_file_size)
+                if total_training % tf_record_file_size != 0:
+                    total_batches += 1
+                print(f"Total of {total_batches} files of {tf_record_file_size} records - {timeit.default_timer() - starttime}")
+
+                counter = 0
+                file_counter = 0
+                buffer = []
+                file_list = []
+                for i in range(total_training):
+                    counter += 1
+                    sentence_embedding = embed([records[i]["text"]])
+                    label_encoded = encode_label(records[i]["label"])
+                    record = serialize_example(label_encoded, sentence_embedding)
+                    buffer.append(record)
+
+                    if len(buffer) >= tf_record_file_size:
+                        # save this buffer of examples as a file to MinIO
+                        counter = 0
+                        file_counter += 1
+                        file_name = f"{prefix}_file{file_counter}.tfrecord"
+                        with open(file_name, "w+") as f:
+                            with tf.io.TFRecordWriter(f.name, options="GZIP") as writer:
+                                for example in buffer:
+                                    writer.write(example.SerializeToString())
+
+                        try:
+                            minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
+                        except S3Error as err:
+                            print(err)
+                        file_list.append(file_name)
+                        os.remove(file_name)
+                        buffer = []
+                        print(f"Done with batch {file_counter}/{total_batches} - {timeit.default_timer() - starttime}")
+                print("")
+                if len(buffer) > 0:
+                    file_counter += 1
+                    file_name = f"file{file_counter}.tfrecord"
+                    with open(file_name, "w+") as f:
+                        with tf.io.TFRecordWriter(f.name) as writer:
+                            for example in buffer:
+                                writer.write(example.SerializeToString())
+                    try:
+                        minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
+                    except S3Error as err:
+                        print(err)
+                    file_list.append(file_name)
+                    os.remove(file_name)
+                    buffer = []
+                print("total time is :", timeit.default_timer() - starttime)
+                return file_list
+
+            process_examples(train, prefix="train")
+            process_examples(test, prefix="test")
+            with open(output_text_path, 'w') as writer:
+                writer.write("done!")
+
+            print("Done!")
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Pre-Process Data', description='')
+        _parser.add_argument("--file", dest="file", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = preprocess_data(**_parsed_args)
+      image: python:3.7
+    outputs:
+      artifacts:
+      - {name: pre-process-data-output_text, path: /tmp/outputs/output_text/data}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.13
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--file", {"inputValue": "file"}, "--output-text", {"outputPath":
+          "output_text"}], "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' || PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' --user) && \"$0\" \"$@\"", "sh",
+          "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\" > \"$program_path\"\npython3
+          -u \"$program_path\" \"$@\"\n", "def _make_parent_dirs_and_return_path(file_path:
+          str):\n    import os\n    os.makedirs(os.path.dirname(file_path), exist_ok=True)\n    return
+          file_path\n\ndef preprocess_data(file,\n                    output_text_path):\n    from
+          minio import Minio, S3Error\n    import tarfile\n    import os\n    import
+          math\n    import tensorflow as tf\n\n    # Config Paramters\n    minio_address
+          = \"minio.ns-1.svc.cluster.local\"\n    minio_access_key = \"kubeflow\"\n    minio_secret_key
+          = \"kubeflow123\"\n    datasets_bucket = \"datasets\"\n    preprocessed_data_folder
+          = \"preprocessed-data\"\n    tf_record_file_size = 500\n\n    minioClient
+          = Minio(minio_address,\n                        access_key=minio_access_key,\n                        secret_key=minio_secret_key,\n                        secure=False)\n    #
+          Download data\n    try:\n        minioClient.fget_object(\n            datasets_bucket,\n            \"aclImdb_v1.tar.gz\",\n            \"/tmp/dataset.tar.gz\")\n    except
+          S3Error as err:\n        print(err)\n\n    # Extract data\n    extract_folder
+          = f\"/tmp/{datasets_bucket}/\"\n\n    with tarfile.open(\"/tmp/dataset.tar.gz\",
+          \"r:gz\") as tar:\n        tar.extractall(path=extract_folder)\n\n    #
+          Load and structure the data\n    train = []\n    test = []\n\n    dirs_to_read
+          = [\n        \"aclImdb/train/pos\",\n        \"aclImdb/train/neg\",\n        \"aclImdb/test/pos\",\n        \"aclImdb/test/neg\",\n    ]\n\n    for
+          dir_name in dirs_to_read:\n        parts = dir_name.split(\"/\")\n        dataset
+          = parts[1]\n        label = parts[2]\n        for filename in os.listdir(os.path.join(extract_folder,
+          dir_name)):\n            with open(os.path.join(extract_folder, dir_name,
+          filename), \"r\") as f:\n                content = f.read()\n                if
+          dataset == \"train\":\n                    train.append({\n                        \"text\":
+          content,\n                        \"label\": label\n                    })\n                elif
+          dataset == \"test\":\n                    test.append({\n                        \"text\":
+          content,\n                        \"label\": label\n                    })\n\n    #
+          Since we encode the data using the Universal Sentence Encoder model let''s
+          download it\n    try:\n        minioClient.fget_object(\n            datasets_bucket,\n            \"models/universal-sentence-encoder_4.tar.gz\",\n            \"/tmp/universal-sentence-encoder_4.tar.gz\")\n    except
+          S3Error as err:\n        print(err)\n    se_model_prefix = \"universal-sentence-encoder/4\"\n    extract_folder
+          = f\"/tmp/{se_model_prefix}/\"\n\n    with tarfile.open(\"/tmp/universal-sentence-encoder_4.tar.gz\",
+          \"r:gz\") as tar:\n        tar.extractall(path=extract_folder)\n    embed
+          = tf.saved_model.load(extract_folder)\n\n    def _embedded_sentence_feature(value):\n        #
+          convert tensor to list of float values\n        input = value.numpy().ravel().tolist()\n        return
+          tf.train.Feature(float_list=tf.train.FloatList(value=input))\n\n    def
+          _label_feature(value):\n        # convert tensor to list of float values\n        input
+          = value.numpy().ravel().tolist()\n        return tf.train.Feature(int64_list=tf.train.Int64List(value=input))\n\n    def
+          encode_label(label):\n        if label == \"pos\":\n            return tf.constant([1,
+          0])\n        elif label == \"neg\":\n            return tf.constant([0,
+          1])\n\n    def serialize_example(label, sentence_tensor):\n        feature
+          = {\n            \"sentence\": _embedded_sentence_feature(sentence_tensor[0]),\n            \"label\":
+          _label_feature(label),\n        }\n        example_proto = tf.train.Example(features=tf.train.Features(feature=feature))\n        return
+          example_proto\n\n    def process_examples(records, prefix=\"\"):\n        print(f\"Process
+          examples for prefix: {prefix}\")\n        import timeit\n        starttime
+          = timeit.default_timer()\n        total_training = len(records)\n        print(f\"Total
+          of {total_training} elements\")\n        total_batches = math.floor(total_training
+          / tf_record_file_size)\n        if total_training % tf_record_file_size
+          != 0:\n            total_batches += 1\n        print(f\"Total of {total_batches}
+          files of {tf_record_file_size} records - {timeit.default_timer() - starttime}\")\n\n        counter
+          = 0\n        file_counter = 0\n        buffer = []\n        file_list =
+          []\n        for i in range(total_training):\n            counter += 1\n            sentence_embedding
+          = embed([records[i][\"text\"]])\n            label_encoded = encode_label(records[i][\"label\"])\n            record
+          = serialize_example(label_encoded, sentence_embedding)\n            buffer.append(record)\n\n            if
+          len(buffer) >= tf_record_file_size:\n                # save this buffer
+          of examples as a file to MinIO\n                counter = 0\n                file_counter
+          += 1\n                file_name = f\"{prefix}_file{file_counter}.tfrecord\"\n                with
+          open(file_name, \"w+\") as f:\n                    with tf.io.TFRecordWriter(f.name,
+          options=\"GZIP\") as writer:\n                        for example in buffer:\n                            writer.write(example.SerializeToString())\n\n                try:\n                    minioClient.fput_object(datasets_bucket,
+          f\"{preprocessed_data_folder}/{file_name}\", file_name)\n                except
+          S3Error as err:\n                    print(err)\n                file_list.append(file_name)\n                os.remove(file_name)\n                buffer
+          = []\n                print(f\"Done with batch {file_counter}/{total_batches}
+          - {timeit.default_timer() - starttime}\")\n        print(\"\")\n        if
+          len(buffer) > 0:\n            file_counter += 1\n            file_name =
+          f\"file{file_counter}.tfrecord\"\n            with open(file_name, \"w+\")
+          as f:\n                with tf.io.TFRecordWriter(f.name) as writer:\n                    for
+          example in buffer:\n                        writer.write(example.SerializeToString())\n            try:\n                minioClient.fput_object(datasets_bucket,
+          f\"{preprocessed_data_folder}/{file_name}\", file_name)\n            except
+          S3Error as err:\n                print(err)\n            file_list.append(file_name)\n            os.remove(file_name)\n            buffer
+          = []\n        print(\"total time is :\", timeit.default_timer() - starttime)\n        return
+          file_list\n\n    process_examples(train, prefix=\"train\")\n    process_examples(test,
+          prefix=\"test\")\n    with open(output_text_path, ''w'') as writer:\n        writer.write(\"done!\")\n\n    print(\"Done!\")\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Pre-Process Data'', description='''')\n_parser.add_argument(\"--file\",
+          dest=\"file\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--output-text\",
+          dest=\"output_text_path\", type=_make_parent_dirs_and_return_path, required=True,
+          default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
+          = preprocess_data(**_parsed_args)\n"], "image": "python:3.7"}}, "inputs":
+          [{"name": "file", "type": "String"}], "name": "Pre-Process Data", "outputs":
+          [{"name": "output_text", "type": "String"}]}', pipelines.kubeflow.org/component_ref: '{}',
+        pipelines.kubeflow.org/arguments.parameters: '{"file": "train"}'}
+  - name: training
+    container:
+      args: [--train, /tmp/inputs/train/data, --output-text, /tmp/outputs/output_text/data]
+      command:
+      - sh
+      - -c
+      - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+        'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' || PIP_DISABLE_PIP_VERSION_CHECK=1
+        python3 -m pip install --quiet --no-warn-script-location 'minio==7.1.10' 'tensorflow==2.2.3'
+        'protobuf==3.20.0' --user) && "$0" "$@"
+      - sh
+      - -ec
+      - |
+        program_path=$(mktemp)
+        printf "%s" "$0" > "$program_path"
+        python3 -u "$program_path" "$@"
+      - |
+        def _make_parent_dirs_and_return_path(file_path: str):
+            import os
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            return file_path
+
+        def train(train_path,
+                  output_text_path):
+            from minio import Minio
+            import os
+            import math
+            import tensorflow as tf
+            from tensorflow import keras
+
+            # Config Paramters
+            minio_address = "minio.ns-1.svc.cluster.local"
+            minio_access_key = "kubeflow"
+            minio_secret_key = "kubeflow123"
+            datasets_bucket = "datasets"
+            preprocessed_data_folder = "preprocessed-data"
+            tf_record_file_size = 500
+
+            minioClient = Minio(minio_address,
+                                access_key=minio_access_key,
+                                secret_key=minio_secret_key,
+                                secure=False)
+
+            # List all training tfrecord files
+            objects = minioClient.list_objects(datasets_bucket, prefix=f"{preprocessed_data_folder}/train")
+            training_files_list = []
+            for obj in objects:
+                training_files_list.append(obj.object_name)
+
+            # Configure TF to use MinIO
+            os.environ["AWS_ACCESS_KEY_ID"] = minio_access_key
+            os.environ["AWS_SECRET_ACCESS_KEY"] = minio_secret_key
+            os.environ["AWS_REGION"] = "us-east-1"
+            os.environ["S3_ENDPOINT"] = minio_address
+            os.environ["S3_USE_HTTPS"] = "0"
+            os.environ["S3_VERIFY_SSL"] = "0"
+
+            all_training_filenames = [f"s3://datasets/{f}" for f in training_files_list]
+
+            total_train_data_files = math.floor(len(all_training_filenames) * 0.9)
+            if total_train_data_files == len(all_training_filenames):
+                total_train_data_files -= 1
+            training_files = all_training_filenames[0:total_train_data_files]
+            validation_files = all_training_filenames[total_train_data_files:]
+
+            AUTO = tf.data.experimental.AUTOTUNE
+            ignore_order = tf.data.Options()
+            ignore_order.experimental_deterministic = False
+
+            dataset = tf.data.TFRecordDataset(training_files, num_parallel_reads=AUTO, compression_type="GZIP")
+            dataset = dataset.with_options(ignore_order)
+
+            validation = tf.data.TFRecordDataset(validation_files, num_parallel_reads=AUTO, compression_type="GZIP")
+            validation = validation.with_options(ignore_order)
+
+            def decode_fn(record_bytes):
+                schema = {
+                    "label": tf.io.FixedLenFeature([2], dtype=tf.int64),
+                    "sentence": tf.io.FixedLenFeature([512], dtype=tf.float32),
+                }
+
+                tf_example = tf.io.parse_single_example(record_bytes, schema)
+                new_shape = tf.reshape(tf_example["sentence"], [1, 512])
+                label = tf.reshape(tf_example["label"], [1, 2])
+                return new_shape, label
+
+            # Build model
+            model = keras.Sequential()
+
+            model.add(
+                keras.layers.Dense(
+                    units=256,
+                    input_shape=(1, 512),
+                    activation="relu"
+                )
+            )
+            model.add(
+                keras.layers.Dropout(rate=0.5)
+            )
+
+            model.add(
+                keras.layers.Dense(
+                    units=16,
+                    activation="relu"
+                )
+            )
+            model.add(
+                keras.layers.Dropout(rate=0.5)
+            )
+
+            model.add(keras.layers.Dense(2, activation="softmax"))
+            model.compile(
+                loss="categorical_crossentropy",
+                optimizer=keras.optimizers.Adam(0.001),
+                metrics=["accuracy"]
+            )
+
+            model.summary()
+
+            mapped_ds = dataset.map(decode_fn)
+            mapped_ds = mapped_ds.repeat(5)
+            mapped_ds = mapped_ds.batch(128)
+
+            mapped_validation = validation.map(decode_fn)
+            mapped_validation = mapped_validation.repeat(5)
+            mapped_validation = mapped_validation.batch(128)
+
+            checkpoint_path = f"s3://{datasets_bucket}/checkpoints/cp.ckpt"
+            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                             save_weights_only=True,
+                                                             verbose=1)
+            from datetime import datetime
+            model_note = "256"
+            logdir = f"s3://{datasets_bucket}/logs/imdb/{model_note}-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+            tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=logdir)
+
+            history = model.fit(
+                mapped_ds,
+                epochs=10,
+                callbacks=[cp_callback, tensorboard_callback],
+                validation_data=mapped_validation,
+            )
+
+            model_destination = f"s3://{datasets_bucket}/imdb_sentiment_analysis/1"
+            model.save(model_destination)
+            with open(output_text_path, 'w') as writer:
+                writer.write("done training!")
+            print("Done!")
+
+        import argparse
+        _parser = argparse.ArgumentParser(prog='Training', description='')
+        _parser.add_argument("--train", dest="train_path", type=str, required=True, default=argparse.SUPPRESS)
+        _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+        _parsed_args = vars(_parser.parse_args())
+
+        _outputs = train(**_parsed_args)
+      image: python:3.7
+    inputs:
+      artifacts:
+      - {name: pre-process-data-output_text, path: /tmp/inputs/train/data}
+    outputs:
+      artifacts:
+      - {name: training-output_text, path: /tmp/outputs/output_text/data}
+    metadata:
+      labels:
+        pipelines.kubeflow.org/kfp_sdk_version: 1.8.13
+        pipelines.kubeflow.org/pipeline-sdk-type: kfp
+        pipelines.kubeflow.org/enable_caching: "true"
+      annotations: {pipelines.kubeflow.org/component_spec: '{"implementation": {"container":
+          {"args": ["--train", {"inputPath": "train"}, "--output-text", {"outputPath":
+          "output_text"}], "command": ["sh", "-c", "(PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' || PIP_DISABLE_PIP_VERSION_CHECK=1
+          python3 -m pip install --quiet --no-warn-script-location ''minio==7.1.10''
+          ''tensorflow==2.2.3'' ''protobuf==3.20.0'' --user) && \"$0\" \"$@\"", "sh",
+          "-ec", "program_path=$(mktemp)\nprintf \"%s\" \"$0\" > \"$program_path\"\npython3
+          -u \"$program_path\" \"$@\"\n", "def _make_parent_dirs_and_return_path(file_path:
+          str):\n    import os\n    os.makedirs(os.path.dirname(file_path), exist_ok=True)\n    return
+          file_path\n\ndef train(train_path,\n          output_text_path):\n    from
+          minio import Minio\n    import os\n    import math\n    import tensorflow
+          as tf\n    from tensorflow import keras\n\n    # Config Paramters\n    minio_address
+          = \"minio.ns-1.svc.cluster.local\"\n    minio_access_key = \"kubeflow\"\n    minio_secret_key
+          = \"kubeflow123\"\n    datasets_bucket = \"datasets\"\n    preprocessed_data_folder
+          = \"preprocessed-data\"\n    tf_record_file_size = 500\n\n    minioClient
+          = Minio(minio_address,\n                        access_key=minio_access_key,\n                        secret_key=minio_secret_key,\n                        secure=False)\n\n    #
+          List all training tfrecord files\n    objects = minioClient.list_objects(datasets_bucket,
+          prefix=f\"{preprocessed_data_folder}/train\")\n    training_files_list =
+          []\n    for obj in objects:\n        training_files_list.append(obj.object_name)\n\n    #
+          Configure TF to use MinIO\n    os.environ[\"AWS_ACCESS_KEY_ID\"] = minio_access_key\n    os.environ[\"AWS_SECRET_ACCESS_KEY\"]
+          = minio_secret_key\n    os.environ[\"AWS_REGION\"] = \"us-east-1\"\n    os.environ[\"S3_ENDPOINT\"]
+          = minio_address\n    os.environ[\"S3_USE_HTTPS\"] = \"0\"\n    os.environ[\"S3_VERIFY_SSL\"]
+          = \"0\"\n\n    all_training_filenames = [f\"s3://datasets/{f}\" for f in
+          training_files_list]\n\n    total_train_data_files = math.floor(len(all_training_filenames)
+          * 0.9)\n    if total_train_data_files == len(all_training_filenames):\n        total_train_data_files
+          -= 1\n    training_files = all_training_filenames[0:total_train_data_files]\n    validation_files
+          = all_training_filenames[total_train_data_files:]\n\n    AUTO = tf.data.experimental.AUTOTUNE\n    ignore_order
+          = tf.data.Options()\n    ignore_order.experimental_deterministic = False\n\n    dataset
+          = tf.data.TFRecordDataset(training_files, num_parallel_reads=AUTO, compression_type=\"GZIP\")\n    dataset
+          = dataset.with_options(ignore_order)\n\n    validation = tf.data.TFRecordDataset(validation_files,
+          num_parallel_reads=AUTO, compression_type=\"GZIP\")\n    validation = validation.with_options(ignore_order)\n\n    def
+          decode_fn(record_bytes):\n        schema = {\n            \"label\": tf.io.FixedLenFeature([2],
+          dtype=tf.int64),\n            \"sentence\": tf.io.FixedLenFeature([512],
+          dtype=tf.float32),\n        }\n\n        tf_example = tf.io.parse_single_example(record_bytes,
+          schema)\n        new_shape = tf.reshape(tf_example[\"sentence\"], [1, 512])\n        label
+          = tf.reshape(tf_example[\"label\"], [1, 2])\n        return new_shape, label\n\n    #
+          Build model\n    model = keras.Sequential()\n\n    model.add(\n        keras.layers.Dense(\n            units=256,\n            input_shape=(1,
+          512),\n            activation=\"relu\"\n        )\n    )\n    model.add(\n        keras.layers.Dropout(rate=0.5)\n    )\n\n    model.add(\n        keras.layers.Dense(\n            units=16,\n            activation=\"relu\"\n        )\n    )\n    model.add(\n        keras.layers.Dropout(rate=0.5)\n    )\n\n    model.add(keras.layers.Dense(2,
+          activation=\"softmax\"))\n    model.compile(\n        loss=\"categorical_crossentropy\",\n        optimizer=keras.optimizers.Adam(0.001),\n        metrics=[\"accuracy\"]\n    )\n\n    model.summary()\n\n    mapped_ds
+          = dataset.map(decode_fn)\n    mapped_ds = mapped_ds.repeat(5)\n    mapped_ds
+          = mapped_ds.batch(128)\n\n    mapped_validation = validation.map(decode_fn)\n    mapped_validation
+          = mapped_validation.repeat(5)\n    mapped_validation = mapped_validation.batch(128)\n\n    checkpoint_path
+          = f\"s3://{datasets_bucket}/checkpoints/cp.ckpt\"\n    cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,\n                                                     save_weights_only=True,\n                                                     verbose=1)\n    from
+          datetime import datetime\n    model_note = \"256\"\n    logdir = f\"s3://{datasets_bucket}/logs/imdb/{model_note}-\"
+          + datetime.now().strftime(\"%Y%m%d-%H%M%S\")\n    tensorboard_callback =
+          tf.keras.callbacks.TensorBoard(log_dir=logdir)\n\n    history = model.fit(\n        mapped_ds,\n        epochs=10,\n        callbacks=[cp_callback,
+          tensorboard_callback],\n        validation_data=mapped_validation,\n    )\n\n    model_destination
+          = f\"s3://{datasets_bucket}/imdb_sentiment_analysis/1\"\n    model.save(model_destination)\n    with
+          open(output_text_path, ''w'') as writer:\n        writer.write(\"done training!\")\n    print(\"Done!\")\n\nimport
+          argparse\n_parser = argparse.ArgumentParser(prog=''Training'', description='''')\n_parser.add_argument(\"--train\",
+          dest=\"train_path\", type=str, required=True, default=argparse.SUPPRESS)\n_parser.add_argument(\"--output-text\",
+          dest=\"output_text_path\", type=_make_parent_dirs_and_return_path, required=True,
+          default=argparse.SUPPRESS)\n_parsed_args = vars(_parser.parse_args())\n\n_outputs
+          = train(**_parsed_args)\n"], "image": "python:3.7"}}, "inputs": [{"name":
+          "train"}], "name": "Training", "outputs": [{"name": "output_text", "type":
+          "String"}]}', pipelines.kubeflow.org/component_ref: '{}'}
+  arguments:
+    parameters:
+    - {name: url}
+  serviceAccountName: pipeline-runner

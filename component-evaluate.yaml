@@ -1,0 +1,111 @@
+name: Evaluate Model
+inputs:
+- {name: train}
+outputs:
+- {name: output_text, type: String}
+implementation:
+  container:
+    image: python:3.7
+    command:
+    - sh
+    - -c
+    - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+      'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' 'matplotlib' 'numpy'
+      || PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+      'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' 'matplotlib' 'numpy'
+      --user) && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp)
+      printf "%s" "$0" > "$program_path"
+      python3 -u "$program_path" "$@"
+    - |
+      def _make_parent_dirs_and_return_path(file_path: str):
+          import os
+          os.makedirs(os.path.dirname(file_path), exist_ok=True)
+          return file_path
+
+      def evaluate(train_path,
+                   output_text_path):
+          import tensorflow as tf
+          from minio import Minio
+          from tensorflow import keras
+          import os
+
+          # Config Paramters
+          minio_address = "minio.ns-1.svc.cluster.local"
+          minio_access_key = "kubeflow"
+          minio_secret_key = "kubeflow123"
+          datasets_bucket = "datasets"
+
+          preprocessed_data_folder = "preprocessed-data"
+          tf_record_file_size = 500
+
+          # Configure TF to use MinIO
+          os.environ["AWS_ACCESS_KEY_ID"] = minio_access_key
+          os.environ["AWS_SECRET_ACCESS_KEY"] = minio_secret_key
+          os.environ["AWS_REGION"] = "us-east-1"
+          os.environ["S3_ENDPOINT"] = minio_address
+          os.environ["S3_USE_HTTPS"] = "0"
+          os.environ["S3_VERIFY_SSL"] = "0"
+
+          minioClient = Minio(minio_address,
+                              access_key=minio_access_key,
+                              secret_key=minio_secret_key,
+                              secure=False)
+
+          AUTO = tf.data.experimental.AUTOTUNE
+          ignore_order = tf.data.Options()
+          ignore_order.experimental_deterministic = False
+
+          # List all testing tfrecord files
+          objects = minioClient.list_objects(datasets_bucket, prefix=f"{preprocessed_data_folder}/test")
+          testing_files_list = []
+          for obj in objects:
+              testing_files_list.append(obj.object_name)
+
+          testing_filenames = [f"s3://datasets/{f}" for f in testing_files_list]
+
+          testing_dataset = tf.data.TFRecordDataset(testing_filenames, num_parallel_reads=AUTO, compression_type="GZIP")
+          testing_dataset = testing_dataset.with_options(ignore_order)
+
+          def decode_fn(record_bytes):
+              schema = {
+                  "label": tf.io.FixedLenFeature([2], dtype=tf.int64),
+                  "sentence": tf.io.FixedLenFeature([512], dtype=tf.float32),
+              }
+
+              tf_example = tf.io.parse_single_example(record_bytes, schema)
+              new_shape = tf.reshape(tf_example["sentence"], [1, 512])
+              label = tf.reshape(tf_example["label"], [1, 2])
+              return new_shape, label
+
+          testing_mapped_ds = testing_dataset.map(decode_fn)
+          testing_mapped_ds = testing_mapped_ds.repeat(5)
+          testing_mapped_ds = testing_mapped_ds.batch(128)
+
+          # load model
+          model_destination = f"s3://{datasets_bucket}/imdb_sentiment_analysis/1"
+
+          model = keras.models.load_model(model_destination)
+
+          testing = model.evaluate(testing_mapped_ds)
+
+          print(testing)
+
+          with open(output_text_path, 'w') as writer:
+              writer.write("done eval!")
+
+      import argparse
+      _parser = argparse.ArgumentParser(prog='Evaluate Model', description='')
+      _parser.add_argument("--train", dest="train_path", type=str, required=True, default=argparse.SUPPRESS)
+      _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+      _parsed_args = vars(_parser.parse_args())
+
+      _outputs = evaluate(**_parsed_args)
+    args:
+    - --train
+    - {inputPath: train}
+    - --output-text
+    - {outputPath: output_text}

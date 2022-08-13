@@ -1,0 +1,207 @@
+name: Pre-Process Data
+inputs:
+- {name: file, type: String}
+outputs:
+- {name: output_text, type: String}
+implementation:
+  container:
+    image: python:3.7
+    command:
+    - sh
+    - -c
+    - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+      'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' || PIP_DISABLE_PIP_VERSION_CHECK=1
+      python3 -m pip install --quiet --no-warn-script-location 'minio==7.1.10' 'tensorflow==2.2.3'
+      'protobuf==3.20.0' --user) && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp)
+      printf "%s" "$0" > "$program_path"
+      python3 -u "$program_path" "$@"
+    - |
+      def _make_parent_dirs_and_return_path(file_path: str):
+          import os
+          os.makedirs(os.path.dirname(file_path), exist_ok=True)
+          return file_path
+
+      def preprocess_data(file,
+                          output_text_path):
+          from minio import Minio, S3Error
+          import tarfile
+          import os
+          import math
+          import tensorflow as tf
+
+          # Config Paramters
+          minio_address = "minio.ns-1.svc.cluster.local"
+          minio_access_key = "kubeflow"
+          minio_secret_key = "kubeflow123"
+          datasets_bucket = "datasets"
+          preprocessed_data_folder = "preprocessed-data"
+          tf_record_file_size = 500
+
+          minioClient = Minio(minio_address,
+                              access_key=minio_access_key,
+                              secret_key=minio_secret_key,
+                              secure=False)
+          # Download data
+          try:
+              minioClient.fget_object(
+                  datasets_bucket,
+                  "aclImdb_v1.tar.gz",
+                  "/tmp/dataset.tar.gz")
+          except S3Error as err:
+              print(err)
+
+          # Extract data
+          extract_folder = f"/tmp/{datasets_bucket}/"
+
+          with tarfile.open("/tmp/dataset.tar.gz", "r:gz") as tar:
+              tar.extractall(path=extract_folder)
+
+          # Load and structure the data
+          train = []
+          test = []
+
+          dirs_to_read = [
+              "aclImdb/train/pos",
+              "aclImdb/train/neg",
+              "aclImdb/test/pos",
+              "aclImdb/test/neg",
+          ]
+
+          for dir_name in dirs_to_read:
+              parts = dir_name.split("/")
+              dataset = parts[1]
+              label = parts[2]
+              for filename in os.listdir(os.path.join(extract_folder, dir_name)):
+                  with open(os.path.join(extract_folder, dir_name, filename), "r") as f:
+                      content = f.read()
+                      if dataset == "train":
+                          train.append({
+                              "text": content,
+                              "label": label
+                          })
+                      elif dataset == "test":
+                          test.append({
+                              "text": content,
+                              "label": label
+                          })
+
+          # Since we encode the data using the Universal Sentence Encoder model let's download it
+          try:
+              minioClient.fget_object(
+                  datasets_bucket,
+                  "models/universal-sentence-encoder_4.tar.gz",
+                  "/tmp/universal-sentence-encoder_4.tar.gz")
+          except S3Error as err:
+              print(err)
+          se_model_prefix = "universal-sentence-encoder/4"
+          extract_folder = f"/tmp/{se_model_prefix}/"
+
+          with tarfile.open("/tmp/universal-sentence-encoder_4.tar.gz", "r:gz") as tar:
+              tar.extractall(path=extract_folder)
+          embed = tf.saved_model.load(extract_folder)
+
+          def _embedded_sentence_feature(value):
+              # convert tensor to list of float values
+              input = value.numpy().ravel().tolist()
+              return tf.train.Feature(float_list=tf.train.FloatList(value=input))
+
+          def _label_feature(value):
+              # convert tensor to list of float values
+              input = value.numpy().ravel().tolist()
+              return tf.train.Feature(int64_list=tf.train.Int64List(value=input))
+
+          def encode_label(label):
+              if label == "pos":
+                  return tf.constant([1, 0])
+              elif label == "neg":
+                  return tf.constant([0, 1])
+
+          def serialize_example(label, sentence_tensor):
+              feature = {
+                  "sentence": _embedded_sentence_feature(sentence_tensor[0]),
+                  "label": _label_feature(label),
+              }
+              example_proto = tf.train.Example(features=tf.train.Features(feature=feature))
+              return example_proto
+
+          def process_examples(records, prefix=""):
+              print(f"Process examples for prefix: {prefix}")
+              import timeit
+              starttime = timeit.default_timer()
+              total_training = len(records)
+              print(f"Total of {total_training} elements")
+              total_batches = math.floor(total_training / tf_record_file_size)
+              if total_training % tf_record_file_size != 0:
+                  total_batches += 1
+              print(f"Total of {total_batches} files of {tf_record_file_size} records - {timeit.default_timer() - starttime}")
+
+              counter = 0
+              file_counter = 0
+              buffer = []
+              file_list = []
+              for i in range(total_training):
+                  counter += 1
+                  sentence_embedding = embed([records[i]["text"]])
+                  label_encoded = encode_label(records[i]["label"])
+                  record = serialize_example(label_encoded, sentence_embedding)
+                  buffer.append(record)
+
+                  if len(buffer) >= tf_record_file_size:
+                      # save this buffer of examples as a file to MinIO
+                      counter = 0
+                      file_counter += 1
+                      file_name = f"{prefix}_file{file_counter}.tfrecord"
+                      with open(file_name, "w+") as f:
+                          with tf.io.TFRecordWriter(f.name, options="GZIP") as writer:
+                              for example in buffer:
+                                  writer.write(example.SerializeToString())
+
+                      try:
+                          minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
+                      except S3Error as err:
+                          print(err)
+                      file_list.append(file_name)
+                      os.remove(file_name)
+                      buffer = []
+                      print(f"Done with batch {file_counter}/{total_batches} - {timeit.default_timer() - starttime}")
+              print("")
+              if len(buffer) > 0:
+                  file_counter += 1
+                  file_name = f"file{file_counter}.tfrecord"
+                  with open(file_name, "w+") as f:
+                      with tf.io.TFRecordWriter(f.name) as writer:
+                          for example in buffer:
+                              writer.write(example.SerializeToString())
+                  try:
+                      minioClient.fput_object(datasets_bucket, f"{preprocessed_data_folder}/{file_name}", file_name)
+                  except S3Error as err:
+                      print(err)
+                  file_list.append(file_name)
+                  os.remove(file_name)
+                  buffer = []
+              print("total time is :", timeit.default_timer() - starttime)
+              return file_list
+
+          process_examples(train, prefix="train")
+          process_examples(test, prefix="test")
+          with open(output_text_path, 'w') as writer:
+              writer.write("done!")
+
+          print("Done!")
+
+      import argparse
+      _parser = argparse.ArgumentParser(prog='Pre-Process Data', description='')
+      _parser.add_argument("--file", dest="file", type=str, required=True, default=argparse.SUPPRESS)
+      _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+      _parsed_args = vars(_parser.parse_args())
+
+      _outputs = preprocess_data(**_parsed_args)
+    args:
+    - --file
+    - {inputValue: file}
+    - --output-text
+    - {outputPath: output_text}

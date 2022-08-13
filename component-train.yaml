@@ -1,0 +1,166 @@
+name: Training
+inputs:
+- {name: train}
+outputs:
+- {name: output_text, type: String}
+implementation:
+  container:
+    image: python:3.7
+    command:
+    - sh
+    - -c
+    - (PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location
+      'minio==7.1.10' 'tensorflow==2.2.3' 'protobuf==3.20.0' || PIP_DISABLE_PIP_VERSION_CHECK=1
+      python3 -m pip install --quiet --no-warn-script-location 'minio==7.1.10' 'tensorflow==2.2.3'
+      'protobuf==3.20.0' --user) && "$0" "$@"
+    - sh
+    - -ec
+    - |
+      program_path=$(mktemp)
+      printf "%s" "$0" > "$program_path"
+      python3 -u "$program_path" "$@"
+    - |
+      def _make_parent_dirs_and_return_path(file_path: str):
+          import os
+          os.makedirs(os.path.dirname(file_path), exist_ok=True)
+          return file_path
+
+      def train(train_path,
+                output_text_path):
+          from minio import Minio
+          import os
+          import math
+          import tensorflow as tf
+          from tensorflow import keras
+
+          # Config Paramters
+          minio_address = "minio.ns-1.svc.cluster.local"
+          minio_access_key = "kubeflow"
+          minio_secret_key = "kubeflow123"
+          datasets_bucket = "datasets"
+          preprocessed_data_folder = "preprocessed-data"
+          tf_record_file_size = 500
+
+          minioClient = Minio(minio_address,
+                              access_key=minio_access_key,
+                              secret_key=minio_secret_key,
+                              secure=False)
+
+          # List all training tfrecord files
+          objects = minioClient.list_objects(datasets_bucket, prefix=f"{preprocessed_data_folder}/train")
+          training_files_list = []
+          for obj in objects:
+              training_files_list.append(obj.object_name)
+
+          # Configure TF to use MinIO
+          os.environ["AWS_ACCESS_KEY_ID"] = minio_access_key
+          os.environ["AWS_SECRET_ACCESS_KEY"] = minio_secret_key
+          os.environ["AWS_REGION"] = "us-east-1"
+          os.environ["S3_ENDPOINT"] = minio_address
+          os.environ["S3_USE_HTTPS"] = "0"
+          os.environ["S3_VERIFY_SSL"] = "0"
+
+          all_training_filenames = [f"s3://datasets/{f}" for f in training_files_list]
+
+          total_train_data_files = math.floor(len(all_training_filenames) * 0.9)
+          if total_train_data_files == len(all_training_filenames):
+              total_train_data_files -= 1
+          training_files = all_training_filenames[0:total_train_data_files]
+          validation_files = all_training_filenames[total_train_data_files:]
+
+          AUTO = tf.data.experimental.AUTOTUNE
+          ignore_order = tf.data.Options()
+          ignore_order.experimental_deterministic = False
+
+          dataset = tf.data.TFRecordDataset(training_files, num_parallel_reads=AUTO, compression_type="GZIP")
+          dataset = dataset.with_options(ignore_order)
+
+          validation = tf.data.TFRecordDataset(validation_files, num_parallel_reads=AUTO, compression_type="GZIP")
+          validation = validation.with_options(ignore_order)
+
+          def decode_fn(record_bytes):
+              schema = {
+                  "label": tf.io.FixedLenFeature([2], dtype=tf.int64),
+                  "sentence": tf.io.FixedLenFeature([512], dtype=tf.float32),
+              }
+
+              tf_example = tf.io.parse_single_example(record_bytes, schema)
+              new_shape = tf.reshape(tf_example["sentence"], [1, 512])
+              label = tf.reshape(tf_example["label"], [1, 2])
+              return new_shape, label
+
+          # Build model
+          model = keras.Sequential()
+
+          model.add(
+              keras.layers.Dense(
+                  units=256,
+                  input_shape=(1, 512),
+                  activation="relu"
+              )
+          )
+          model.add(
+              keras.layers.Dropout(rate=0.5)
+          )
+
+          model.add(
+              keras.layers.Dense(
+                  units=16,
+                  activation="relu"
+              )
+          )
+          model.add(
+              keras.layers.Dropout(rate=0.5)
+          )
+
+          model.add(keras.layers.Dense(2, activation="softmax"))
+          model.compile(
+              loss="categorical_crossentropy",
+              optimizer=keras.optimizers.Adam(0.001),
+              metrics=["accuracy"]
+          )
+
+          model.summary()
+
+          mapped_ds = dataset.map(decode_fn)
+          mapped_ds = mapped_ds.repeat(5)
+          mapped_ds = mapped_ds.batch(128)
+
+          mapped_validation = validation.map(decode_fn)
+          mapped_validation = mapped_validation.repeat(5)
+          mapped_validation = mapped_validation.batch(128)
+
+          checkpoint_path = f"s3://{datasets_bucket}/checkpoints/cp.ckpt"
+          cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                           save_weights_only=True,
+                                                           verbose=1)
+          from datetime import datetime
+          model_note = "256"
+          logdir = f"s3://{datasets_bucket}/logs/imdb/{model_note}-" + datetime.now().strftime("%Y%m%d-%H%M%S")
+          tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=logdir)
+
+          history = model.fit(
+              mapped_ds,
+              epochs=10,
+              callbacks=[cp_callback, tensorboard_callback],
+              validation_data=mapped_validation,
+          )
+
+          model_destination = f"s3://{datasets_bucket}/imdb_sentiment_analysis/1"
+          model.save(model_destination)
+          with open(output_text_path, 'w') as writer:
+              writer.write("done training!")
+          print("Done!")
+
+      import argparse
+      _parser = argparse.ArgumentParser(prog='Training', description='')
+      _parser.add_argument("--train", dest="train_path", type=str, required=True, default=argparse.SUPPRESS)
+      _parser.add_argument("--output-text", dest="output_text_path", type=_make_parent_dirs_and_return_path, required=True, default=argparse.SUPPRESS)
+      _parsed_args = vars(_parser.parse_args())
+
+      _outputs = train(**_parsed_args)
+    args:
+    - --train
+    - {inputPath: train}
+    - --output-text
+    - {outputPath: output_text}
